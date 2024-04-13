@@ -1,3 +1,7 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from PIL import Image
@@ -9,14 +13,55 @@ import base64
 app = Flask(__name__)
 CORS(app)
 
+# Define the custom metric function for dice coefficient
+def dice_coefficient(y_true, y_pred):
+    y_true_f = tf.keras.backend.flatten(y_true)
+    y_pred_f = tf.keras.backend.flatten(y_pred)
+    intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
+    return (2. * intersection + 1) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + 1)
+
+# Register the custom metric function
+tf.keras.utils.get_custom_objects()['dice_coefficient'] = dice_coefficient
+
+# Load the model for inpainting
+model = tf.keras.models.load_model('./model/unet_model.h5', custom_objects={'dice_coefficient': dice_coefficient})
+
+def inpaint_image(image, model):
+    # Ensure the image has only 3 channels (RGB)
+    image = image[:, :, :3]
+    # Resize the image to match the model's input shape
+    image_resized = cv2.resize(image, (32, 32))
+    # Preprocess the image
+    image_resized = image_resized.astype(np.float32) / 255.0
+
+    # Predict the inpainted image
+    inpainted_image = model.predict(np.expand_dims(image_resized, axis=0))
+    # Post-process the predicted image
+    inpainted_image = (inpainted_image.squeeze() * 255).astype(np.uint8)
+    return inpainted_image
+
+
+def extract_image_and_mask(masked_image):
+    # Convert masked image to grayscale
+    gray = cv2.cvtColor(masked_image, cv2.COLOR_BGR2GRAY)
+
+    # Threshold the grayscale image to get the mask
+    ret, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+
+    # Invert the mask
+    mask = cv2.bitwise_not(mask)
+
+    # Apply the mask to the original image
+    image = cv2.bitwise_and(masked_image, masked_image, mask=mask)
+
+    return image, mask
+
 @app.route('/process_image', methods=['POST'])
 def process_image():
     data = request.get_json()
 
-    # Extract operation, dataURL, and scaleValue from JSON data
-    operation = data.get('operation')
+    # Extract dataURL from JSON data
     dataURL = data.get('dataURL')
-    scaleValue = data.get('scaleValue')  # Add this line
 
     # Check if 'dataURL' is present in the request
     if not dataURL:
@@ -29,39 +74,16 @@ def process_image():
     # Read the image using PIL
     image = Image.open(io.BytesIO(image_binary))
 
-    # Convert the image to a NumPy array for OpenCV processing
+    # Convert the image to a NumPy array for inpainting
     image_np = np.array(image)
 
-    # Image processing logic
-    if operation == 'Image Sharpening':
-        sharpening_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-        image_np = cv2.filter2D(image_np, -1, sharpening_kernel)
-    elif operation == 'Image Blurring':
-        blur_size = (5, 5)
-        image_np = cv2.blur(image_np, blur_size)
-    elif operation == 'Color Grayscale':
-        image_np = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-    elif operation == 'Color Inversion':
-        image_np = cv2.bitwise_not(image_np)
-    elif operation == 'Rotation':
-        angle = 90
-        rows, cols, _ = image_np.shape
-        rotation_matrix = cv2.getRotationMatrix2D((cols/2, rows/2), angle, 1)
-        image_np = cv2.warpAffine(image_np, rotation_matrix, (cols, rows))
-    elif operation == 'Scaling':
-        # Use the scaleValue received from the frontend
-        scale_factor = scaleValue
-        image_np = cv2.resize(image_np, None, fx=scale_factor, fy=scale_factor)
-    elif operation == 'Binary Thresholding':
-        _, image_np = cv2.threshold(cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY), 127, 255, cv2.THRESH_BINARY)
-    elif operation == 'Adaptive Thresholding':
-        image_np = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-        image_np = cv2.adaptiveThreshold(image_np, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2)
-    else:
-        return jsonify({'error': 'Invalid operation'})
+    # Inpaint the image
+    inpainted_image = inpaint_image(image_np, model)
+
+    img, mask = extract_image_and_mask(image_np)
 
     # Convert the NumPy array back to an image
-    result_image = Image.fromarray(image_np)
+    result_image = Image.fromarray(inpainted_image)
 
     # Save the processed image to a BytesIO object
     img_io = io.BytesIO()
@@ -70,6 +92,7 @@ def process_image():
 
     # Return the processed image
     return send_file(img_io, mimetype='image/png')
+
 
 if __name__ == '__main__':
     app.run(debug=True)
