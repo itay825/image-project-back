@@ -10,8 +10,7 @@ def dice_coefficient(y_true, y_pred):
     intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
     return (2. * intersection + 1) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + 1)
 
-# Load the saved model with custom_objects argument
-model = tf.keras.models.load_model('model/unet_model.h5', custom_objects={'dice_coefficient': dice_coefficient})
+model = tf.keras.models.load_model('back_project/model/unet_model.h5', custom_objects={'dice_coefficient': dice_coefficient})
 
 # Function to perform image inpainting using the loaded model
 def inpaint_image(image):
@@ -36,45 +35,57 @@ def inpaint_image(image):
     inpainted_image = (inpainted_image.squeeze() * 255).astype(np.uint8)
     return inpainted_image, mask, image_resized_masked, image_resized
 
-
-
 # Example usage:
 # Load an example image
-example_image = cv2.imread('123.png')  # Replace '123.png' with your image path
+example_image = cv2.imread('back_project/model/123.png')
+height, width, _ = example_image.shape
+print("Example Image Width:", width)
+print("Example Image Height:", height)
 # Perform inpainting
 inpainted_example, mask, image_resized_masked, image_resized = inpaint_image(example_image)
 
-# Display original image, resized image with mask, mask, and inpainted image
-plt.figure(figsize=(20, 5))
+# Display original image, resized image with mask, mask, inpainted image, and combined image
+plt.figure(figsize=(20, 10))
 
 # Original Image
-plt.subplot(1, 5, 1)
+plt.subplot(2, 3, 1)
 plt.title('Original Image')
 plt.imshow(cv2.cvtColor(example_image, cv2.COLOR_BGR2RGB))
 plt.axis('off')
 
 # Resized Image
-plt.subplot(1, 5, 2)
+plt.subplot(2, 3, 2)
 plt.title('Resized Image')
 plt.imshow(cv2.cvtColor((image_resized * 255).astype(np.uint8), cv2.COLOR_BGR2RGB))
 plt.axis('off')
 
 # Resized Image with Mask
-plt.subplot(1, 5, 3)
+plt.subplot(2, 3, 3)
 plt.title('Resized Image with Mask')
 plt.imshow(cv2.cvtColor((image_resized_masked * 255).astype(np.uint8), cv2.COLOR_BGR2RGB))
 plt.axis('off')
 
 # Mask
-plt.subplot(1, 5, 4)
+plt.subplot(2, 3, 4)
 plt.title('Mask')
 plt.imshow(mask, cmap='gray')
 plt.axis('off')
 
 # Inpainted Image
-plt.subplot(1, 5, 5)
+plt.subplot(2, 3, 5)
 plt.title('Inpainted Image')
 plt.imshow(cv2.cvtColor(inpainted_example, cv2.COLOR_BGR2RGB))
 plt.axis('off')
 
+# Resized Image with Mask and Inpainted Image combined
+plt.subplot(2, 3, 6)
+resized_mask = cv2.resize(mask, (example_image.shape[1], example_image.shape[0]))
+resized_inpainted = cv2.resize(inpainted_example, (example_image.shape[1], example_image.shape[0]))
+combined_image = np.copy(example_image)
+combined_image[resized_mask == 0] = resized_inpainted[resized_mask == 0]
+plt.title('Inpainted Image on Original')
+plt.imshow(cv2.cvtColor(combined_image, cv2.COLOR_BGR2RGB))
+plt.axis('off')
+
+plt.tight_layout()
 plt.show()

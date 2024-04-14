@@ -146,7 +146,7 @@ plt.grid(True)
 plt.show()
 
 # Save the trained model
-model.save('unet_model.h5')
+model.save('back_project/model/unet_model.h5')
 print("Model saved successfully.")
 
 # Display results
@@ -161,3 +161,4 @@ for i, idx in enumerate(sample_idx):
     axs[i][1].imshow(sample_images[img_idx])
     axs[i][2].imshow(inpainted_image.reshape(inpainted_image.shape[1:]))
 plt.show()
+
