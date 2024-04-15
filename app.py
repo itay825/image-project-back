@@ -26,42 +26,36 @@ tf.keras.utils.get_custom_objects()['dice_coefficient'] = dice_coefficient
 # Load the model for inpainting
 model = tf.keras.models.load_model('./model/unet_model.h5', custom_objects={'dice_coefficient': dice_coefficient})
 
-def inpaint_image(image, model):
-    # Ensure the image has only 3 channels (RGB)
-    image = image[:, :, :3]
+def inpaint_image(image, startX, startY, endX, endY):
+    print("Input image shape:", image.shape)
     # Resize the image to match the model's input shape
     image_resized = cv2.resize(image, (32, 32))
     # Preprocess the image
     image_resized = image_resized.astype(np.float32) / 255.0
 
+    # Create a mask based on the provided coordinates
+    mask = np.ones_like(image_resized)
+    mask[startY:endY, startX:endX, :] = 0  
+
+    # Apply the mask to the input image
+    image_resized_masked = image_resized * mask
+
     # Predict the inpainted image
-    inpainted_image = model.predict(np.expand_dims(image_resized, axis=0))
+    inpainted_image = model.predict(np.expand_dims(image_resized_masked, axis=0))
     # Post-process the predicted image
     inpainted_image = (inpainted_image.squeeze() * 255).astype(np.uint8)
-    return inpainted_image
-
-
-def extract_image_and_mask(masked_image):
-    # Convert masked image to grayscale
-    gray = cv2.cvtColor(masked_image, cv2.COLOR_BGR2GRAY)
-
-    # Threshold the grayscale image to get the mask
-    ret, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-
-    # Invert the mask
-    mask = cv2.bitwise_not(mask)
-
-    # Apply the mask to the original image
-    image = cv2.bitwise_and(masked_image, masked_image, mask=mask)
-
-    return image, mask
+    return inpainted_image, mask, image_resized_masked, image_resized
 
 @app.route('/process_image', methods=['POST'])
 def process_image():
     data = request.get_json()
-
-    # Extract dataURL from JSON data
+    # Extract dataURL and coordinates from JSON data
     dataURL = data.get('dataURL')
+    startX = int(data.get('startX'))
+    startY = int(data.get('startY'))
+    endX = int(data.get('endX'))
+    endY = int(data.get('endY'))
+    print(startX, startY, endX, endY, " fdfs")
 
     # Check if 'dataURL' is present in the request
     if not dataURL:
@@ -72,26 +66,40 @@ def process_image():
     image_binary = base64.b64decode(image_data)
 
     # Read the image using PIL
-    image = Image.open(io.BytesIO(image_binary))
+    image_np = np.frombuffer(image_binary, np.uint8)
+    example_image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
 
-    # Convert the image to a NumPy array for inpainting
-    image_np = np.array(image)
+    # Get the resizing factor
+    resize_factor_x = example_image.shape[1] / 32
+    resize_factor_y = example_image.shape[0] / 32
 
-    # Inpaint the image
-    inpainted_image = inpaint_image(image_np, model)
+    # Scale the coordinates down
+    startX = int(startX / resize_factor_x)
+    startY = int(startY / resize_factor_y)
+    endX = int(endX / resize_factor_x)
+    endY = int(endY / resize_factor_y)
 
-    img, mask = extract_image_and_mask(image_np)
+    # Inpaint the image with adjusted coordinates
+    inpainted_example, mask, image_resized_masked, image_resized = inpaint_image(example_image, startX, startY, endX, endY)
 
-    # Convert the NumPy array back to an image
-    result_image = Image.fromarray(inpainted_image)
+    # Resize the mask and inpainted image to original size
+    resized_mask = cv2.resize(mask, (example_image.shape[1], example_image.shape[0]))
+    resized_inpainted = cv2.resize(inpainted_example, (example_image.shape[1], example_image.shape[0]))
+    combined_image = np.copy(example_image)
+    combined_image[resized_mask == 0] = resized_inpainted[resized_mask == 0]
 
     # Save the processed image to a BytesIO object
     img_io = io.BytesIO()
-    result_image.save(img_io, 'PNG')
+    combined_image_rgb = cv2.cvtColor(combined_image, cv2.COLOR_BGR2RGB)
+    combined_image_pil = Image.fromarray(combined_image_rgb)
+    combined_image_pil.save(img_io, 'PNG')
+
     img_io.seek(0)
 
     # Return the processed image
     return send_file(img_io, mimetype='image/png')
+
+
 
 
 if __name__ == '__main__':
