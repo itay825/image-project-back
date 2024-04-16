@@ -28,23 +28,37 @@ model = tf.keras.models.load_model('./model/unet_model.h5', custom_objects={'dic
 
 def inpaint_image(image, startX, startY, endX, endY):
     print("Input image shape:", image.shape)
-    # Resize the image to match the model's input shape
-    image_resized = cv2.resize(image, (32, 32))
-    # Preprocess the image
+
+    margin=5
+    startX = max(0, startX - margin)
+    startY = max(0, startY - margin)
+    endX = min(image.shape[1], endX + margin)
+    endY = min(image.shape[0], endY + margin)
+
+    print("Top-right corner coordinates:", (endX, startY))
+    print("Bottom-left corner coordinates:", (startX, endY))
+    
+    # Create a mask based on the provided coordinates
+    mask = np.ones_like(image)
+    mask[startY:endY, startX:endX, :] = 0
+    
+    # Apply the mask to the input image
+    image_masked = image * mask
+
+    # Resize the masked image to match the model's input shape
+    image_resized = cv2.resize(image_masked, (32, 32))
+
+    # Preprocess the resized image
     image_resized = image_resized.astype(np.float32) / 255.0
 
-    # Create a mask based on the provided coordinates
-    mask = np.ones_like(image_resized)
-    mask[startY:endY, startX:endX, :] = 0  
-
-    # Apply the mask to the input image
-    image_resized_masked = image_resized * mask
-
     # Predict the inpainted image
-    inpainted_image = model.predict(np.expand_dims(image_resized_masked, axis=0))
+    inpainted_image = model.predict(np.expand_dims(image_resized, axis=0))
+
     # Post-process the predicted image
     inpainted_image = (inpainted_image.squeeze() * 255).astype(np.uint8)
-    return inpainted_image, mask, image_resized_masked, image_resized
+    
+    return inpainted_image, mask, image_resized, image_masked
+
 
 @app.route('/process_image', methods=['POST'])
 def process_image():
@@ -55,7 +69,7 @@ def process_image():
     startY = int(data.get('startY'))
     endX = int(data.get('endX'))
     endY = int(data.get('endY'))
-    print(startX, startY, endX, endY, " fdfs")
+    print("cords", startX, startY, endX, endY)
 
     # Check if 'dataURL' is present in the request
     if not dataURL:
@@ -68,16 +82,6 @@ def process_image():
     # Read the image using PIL
     image_np = np.frombuffer(image_binary, np.uint8)
     example_image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
-
-    # Get the resizing factor
-    resize_factor_x = example_image.shape[1] / 32
-    resize_factor_y = example_image.shape[0] / 32
-
-    # Scale the coordinates down
-    startX = int(startX / resize_factor_x)
-    startY = int(startY / resize_factor_y)
-    endX = int(endX / resize_factor_x)
-    endY = int(endY / resize_factor_y)
 
     # Inpaint the image with adjusted coordinates
     inpainted_example, mask, image_resized_masked, image_resized = inpaint_image(example_image, startX, startY, endX, endY)
@@ -98,8 +102,6 @@ def process_image():
 
     # Return the processed image
     return send_file(img_io, mimetype='image/png')
-
-
 
 
 if __name__ == '__main__':
