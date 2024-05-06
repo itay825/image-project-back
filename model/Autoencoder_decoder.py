@@ -7,25 +7,29 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 # Print TensorFlow version
 print("TensorFlow version:", tf.__version__)
 
-# Load CIFAR-10 dataset
+# Load CIFAR-10 dataset with a smaller subset
 (train_images, train_labels), (test_images, test_labels) = tf.keras.datasets.cifar10.load_data()
+train_images = train_images[:10000]  # Selecting first 1000 samples
+train_labels = train_labels[:10000]
+test_images = test_images[:2000]  # Selecting first 200 samples
+test_labels = test_labels[:2000]
 print('Train images shape:', train_images.shape)
 print('Train samples:', len(train_images))
 print('Test samples:', len(test_images))
 
 # Display sample images
-sample_images = train_images[:32]
-sample_labels = train_labels[:32]
-fig = plt.figure(figsize=(20., 10.))  # Increase the figure size
-grid = ImageGrid(fig, 111, nrows_ncols=(4, 8), axes_pad=0.3)
+sample_images = train_images[:16]  # Displaying first 16 samples
+sample_labels = train_labels[:16]
+fig = plt.figure(figsize=(10., 5.))  # Reduced figure size
+grid = ImageGrid(fig, 111, nrows_ncols=(4, 4), axes_pad=0.3)
 for ax, image, label in zip(grid, sample_images, sample_labels):
     ax.imshow(image)
     ax.set_title(label[0])
 plt.show()
 
-# Define data generator class
+# Define data generator class with a smaller batch size
 class DataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, images, labels, batch_size=32, image_size=(32, 32), n_channels=3, shuffle=True):
+    def __init__(self, images, labels, batch_size=8, image_size=(32, 32), n_channels=3, shuffle=True):
         self.batch_size = batch_size
         self.labels = labels
         self.images = images
@@ -61,19 +65,17 @@ class DataGenerator(tf.keras.utils.Sequence):
             y_batch[i] = self.labels[idx] / 255
         return X_batch, y_batch
 
-
-# Create data generators
-train_generator = DataGenerator(train_images, train_images)
-test_generator = DataGenerator(test_images, test_images)
+# Create data generators with a smaller batch size
+train_generator = DataGenerator(train_images, train_images, batch_size=8)
+test_generator = DataGenerator(test_images, test_images, batch_size=8)
 
 # Define Dice coefficient function
 def dice_coefficient(y_true, y_pred):
-    y_true_f = tf.keras.backend.flatten(y_true)
-    y_pred_f = tf.keras.backend.flatten(y_pred)
+    y_true_f = tf.cast(tf.keras.backend.flatten(y_true), dtype=tf.float32)
+    y_pred_f = tf.cast(tf.keras.backend.flatten(y_pred), dtype=tf.float32)
     intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
     return (2. * intersection + 1) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + 1)
 
-# Define UNet-like model
 def create_unet_model():
     inputs = tf.keras.layers.Input((32, 32, 3))
     conv1 = tf.keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
@@ -123,7 +125,7 @@ model.compile(optimizer=tf.keras.optimizers.Adam(), loss='binary_crossentropy', 
 model.summary()
 
 # Training loop
-epochs = 1
+epochs = 1  # Increase the number of epochs for better convergence
 dice_history = []  # Store dice coefficient for each epoch
 for epoch in range(epochs):
     print(f'Epoch {epoch + 1}/{epochs}')
@@ -149,16 +151,21 @@ plt.show()
 model.save('back_project/model/unet_model.h5')
 print("Model saved successfully.")
 
-# Display results
 rows = 16
-sample_idx = np.random.randint(0, len(test_generator), rows)
 fig, axs = plt.subplots(nrows=rows, ncols=3, figsize=(20, 120))  # Increase the figure size
-for i, idx in enumerate(sample_idx):
+for i in range(rows):
+    # Generate a random index for the test set
+    idx = np.random.randint(0, len(test_generator))
     sample_images, sample_labels = test_generator[idx]
-    img_idx = np.random.randint(0, len(sample_images) - 1, 1)[0]
+    # Generate a random index for selecting an image from the sample
+    img_idx = np.random.randint(0, len(sample_images) - 1)
+    # Predict using the model
     inpainted_image = model.predict(sample_images[img_idx].reshape((1,) + sample_images[img_idx].shape))
+    # Plot original image, ground truth, and inpainted image
     axs[i][0].imshow(sample_labels[img_idx])
+    axs[i][0].set_title('Ground Truth')
     axs[i][1].imshow(sample_images[img_idx])
+    axs[i][1].set_title('Original Image')
     axs[i][2].imshow(inpainted_image.reshape(inpainted_image.shape[1:]))
+    axs[i][2].set_title('Inpainted Image')
 plt.show()
-

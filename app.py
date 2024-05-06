@@ -1,49 +1,37 @@
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import tensorflow as tf
-tf.get_logger().setLevel('ERROR')
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-from PIL import Image
+import base64
 import numpy as np
 import cv2
 import io
-import base64
+from PIL import Image
+import tensorflow as tf
+import matplotlib.pyplot as plt
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/process_image": {"origins": "http://localhost:5173"}})
 
-# Define the custom metric function for dice coefficient
 def dice_coefficient(y_true, y_pred):
     y_true_f = tf.keras.backend.flatten(y_true)
     y_pred_f = tf.keras.backend.flatten(y_pred)
     intersection = tf.keras.backend.sum(y_true_f * y_pred_f)
     return (2. * intersection + 1) / (tf.keras.backend.sum(y_true_f) + tf.keras.backend.sum(y_pred_f) + 1)
 
-# Register the custom metric function
-tf.keras.utils.get_custom_objects()['dice_coefficient'] = dice_coefficient
-
-# Load the model for inpainting
 model = tf.keras.models.load_model('./model/unet_model.h5', custom_objects={'dice_coefficient': dice_coefficient})
 
-def inpaint_image(image, startX, startY, endX, endY):
-    print("Input image shape:", image.shape)
+def inpaint_image(image, mask):
+    # Extract alpha channel from the mask
+    alpha_channel = mask[:, :, 3]
 
-    margin=5
-    startX = max(0, startX - margin)
-    startY = max(0, startY - margin)
-    endX = min(image.shape[1], endX + margin)
-    endY = min(image.shape[0], endY + margin)
+    # Convert alpha channel to binary mask
+    binary_mask = (alpha_channel > 0).astype(np.uint8) * 255
 
-    print("Top-right corner coordinates:", (endX, startY))
-    print("Bottom-left corner coordinates:", (startX, endY))
-    
-    # Create a mask based on the provided coordinates
-    mask = np.ones_like(image)
-    mask[startY:endY, startX:endX, :] = 0
-    
-    # Apply the mask to the input image
-    image_masked = image * mask
+    # Replicate the binary mask to match the number of channels in the image
+    binary_mask = np.repeat(binary_mask[:, :, np.newaxis], 3, axis=2)
+
+    binary_mask = 255 - binary_mask
+    # Apply the binary mask to the input image
+    image_masked = image * (binary_mask / 255.0)
 
     # Resize the masked image to match the model's input shape
     image_resized = cv2.resize(image_masked, (32, 32))
@@ -56,51 +44,62 @@ def inpaint_image(image, startX, startY, endX, endY):
 
     # Post-process the predicted image
     inpainted_image = (inpainted_image.squeeze() * 255).astype(np.uint8)
-    
-    return inpainted_image, mask, image_resized, image_masked
+
+    # Resize the inpainted image to match the original image dimensions
+    inpainted_image_resized = cv2.resize(inpainted_image, (image.shape[1], image.shape[0]))
+
+    return inpainted_image_resized
 
 
 @app.route('/process_image', methods=['POST'])
 def process_image():
     data = request.get_json()
-    # Extract dataURL and coordinates from JSON data
+    # Extract dataURL and maskDataURL from JSON data
     dataURL = data.get('dataURL')
-    startX = int(data.get('startX'))
-    startY = int(data.get('startY'))
-    endX = int(data.get('endX'))
-    endY = int(data.get('endY'))
-    print("cords", startX, startY, endX, endY)
+    maskDataURL = data.get('maskDataURL')
 
-    # Check if 'dataURL' is present in the request
-    if not dataURL:
-        return jsonify({'error': 'No image provided'})
+    # Check if 'dataURL' and 'maskDataURL' are present in the request
+    if not dataURL or not maskDataURL:
+        return jsonify({'error': 'Both image and mask dataURLs are required'})
 
     # Extract the base64-encoded image data from the dataURL
     image_data = dataURL.split(',')[1]
     image_binary = base64.b64decode(image_data)
 
-    # Read the image using PIL
-    image_np = np.frombuffer(image_binary, np.uint8)
-    example_image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+    # Read the image using PIL and convert to RGB color space
+    original_image = np.array(Image.open(io.BytesIO(image_binary)).convert('RGB'))
 
-    # Inpaint the image with adjusted coordinates
-    inpainted_example, mask, image_resized_masked, image_resized = inpaint_image(example_image, startX, startY, endX, endY)
+    # Decode the mask image from base64 and convert to PIL Image
+    mask_data = base64.b64decode(maskDataURL.split(',')[1])
+    mask_image = cv2.imdecode(np.frombuffer(mask_data, np.uint8), cv2.IMREAD_UNCHANGED)
 
-    # Resize the mask and inpainted image to original size
-    resized_mask = cv2.resize(mask, (example_image.shape[1], example_image.shape[0]))
-    resized_inpainted = cv2.resize(inpainted_example, (example_image.shape[1], example_image.shape[0]))
-    combined_image = np.copy(example_image)
-    combined_image[resized_mask == 0] = resized_inpainted[resized_mask == 0]
+    # Perform inpainting on the original image using the mask
+    inpainted_image = inpaint_image(original_image, mask_image)
 
-    # Save the processed image to a BytesIO object
+    # Combine the original image with the inpainted one using the mask
+    combined_image = original_image.copy()
+    combined_image[mask_image[:, :, 3] > 0] = inpainted_image[mask_image[:, :, 3] > 0]
+
+    # Convert the combined image to PIL Image
+    combined_pil = Image.fromarray(combined_image)
+
+
+    # Plot the inpainted image and the mask
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    axes[0].imshow(inpainted_image)
+    axes[0].set_title('Inpainted Image')
+    axes[0].axis('off')
+    axes[1].imshow(mask_image, cmap='gray')
+    axes[1].set_title('Mask')
+    axes[1].axis('off')
+    plt.show()
+    
+    # Save the combined image to BytesIO object
     img_io = io.BytesIO()
-    combined_image_rgb = cv2.cvtColor(combined_image, cv2.COLOR_BGR2RGB)
-    combined_image_pil = Image.fromarray(combined_image_rgb)
-    combined_image_pil.save(img_io, 'PNG')
-
+    combined_pil.save(img_io, format='PNG')
     img_io.seek(0)
 
-    # Return the processed image
+    # Return the combined image
     return send_file(img_io, mimetype='image/png')
 
 
